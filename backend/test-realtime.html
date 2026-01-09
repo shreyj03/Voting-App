@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Real-Time Voting Test</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 50px auto;
+      padding: 20px;
+    }
+    
+    .section {
+      border: 2px solid #333;
+      padding: 20px;
+      margin: 20px 0;
+      border-radius: 8px;
+    }
+    
+    .connected { border-color: green; }
+    .disconnected { border-color: red; }
+    
+    button {
+      padding: 10px 20px;
+      font-size: 16px;
+      margin: 5px;
+      cursor: pointer;
+      background: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+    }
+    
+    button:hover {
+      background: #45a049;
+    }
+    
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    
+    .result {
+      display: flex;
+      align-items: center;
+      margin: 10px 0;
+    }
+    
+    .bar {
+      height: 30px;
+      background: #4CAF50;
+      margin-left: 10px;
+      transition: width 0.3s ease;
+      border-radius: 4px;
+    }
+    
+    .log {
+      background: #f0f0f0;
+      padding: 10px;
+      margin: 10px 0;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    
+    input[type="text"] {
+      padding: 8px;
+      font-size: 14px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+    }
+    
+    .toggle {
+      display: inline-block;
+      margin: 10px 0;
+    }
+    
+    .toggle label {
+      margin-right: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h1>🗳️ Real-Time Voting Test</h1>
+  
+  <div id="status" class="section disconnected">
+    <h2>Connection Status: <span id="statusText">Disconnected</span></h2>
+    <p>Socket ID: <span id="socketId">-</span></p>
+    <p>Poll Room: <span id="currentRoom">Not joined</span></p>
+  </div>
+  
+  <div class="section">
+    <h2>Setup</h2>
+    <label>Poll ID: <input type="text" id="pollId" placeholder="Enter poll ID" style="width: 300px;" value="69603c87af8688e011ef2628"></label>
+    <br><br>
+    <button onclick="joinPoll()">Join Poll</button>
+    <button onclick="leavePoll()">Leave Poll</button>
+    
+    <div class="toggle">
+      <br><br>
+      <label>
+        <input type="checkbox" id="testModeCheckbox" onchange="toggleTestMode()">
+        <strong>Test Mode</strong> (random IPs for each vote - simulates multiple users)
+      </label>
+      <p style="font-size: 12px; color: #666;">
+        Unchecked = Use your real IP (test rate limiting)<br>
+        Checked = Random IPs (test multiple users voting)
+      </p>
+    </div>
+  </div>
+  
+  <div class="section">
+    <h2>Vote</h2>
+    <button onclick="vote('A')">Vote A</button>
+    <button onclick="vote('B')">Vote B</button>
+    <button onclick="vote('C')">Vote C</button>
+    <button onclick="vote('D')">Vote D</button>
+  </div>
+  
+  <div class="section">
+    <h2>Live Results</h2>
+    <div id="results">No data yet...</div>
+    <p><strong>Total Votes:</strong> <span id="totalVotes">0</span></p>
+  </div>
+  
+  <div class="section">
+    <h2>Event Log</h2>
+    <button onclick="clearLog()" style="background: #f44336;">Clear Log</button>
+    <div id="log" class="log"></div>
+  </div>
+
+  <!-- Socket.IO Client Library -->
+  <script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
+  
+  <script>
+    // Connect to Socket.IO server
+    const socket = io('http://localhost:3000');
+    
+    let currentPollId = null;
+    let testMode = false;
+    
+    // ============================================
+    // Socket.IO Event Handlers
+    // ============================================
+    
+    socket.on('connect', () => {
+      log('✅ Connected to server');
+      updateStatus('Connected', socket.id);
+      
+      // Auto-join if poll ID exists
+      const pollIdInput = document.getElementById('pollId');
+      if (pollIdInput.value.trim() && !currentPollId) {
+        setTimeout(() => joinPoll(), 500);
+      }
+    });
+    
+    socket.on('disconnect', () => {
+      log('❌ Disconnected from server');
+      updateStatus('Disconnected', '-');
+      document.getElementById('currentRoom').textContent = 'Not joined';
+    });
+    
+    socket.on('joined_poll', (data) => {
+      log(`🔔 Joined poll: ${data.pollId}`);
+      document.getElementById('currentRoom').textContent = `poll:${data.pollId}`;
+    });
+    
+    socket.on('left_poll', (data) => {
+      log(`👋 Left poll: ${data.pollId}`);
+      document.getElementById('currentRoom').textContent = 'Not joined';
+    });
+    
+    socket.on('poll_update', (data) => {
+      log(`📡 Received update for poll ${data.pollId} (Total: ${data.totalVotes})`);
+      displayResults(data.results, data.totalVotes);
+      
+      // Flash effect
+      const resultsDiv = document.getElementById('results');
+      resultsDiv.style.background = '#ffffcc';
+      setTimeout(() => {
+        resultsDiv.style.background = 'transparent';
+      }, 300);
+    });
+    
+    socket.on('error', (error) => {
+      log(`❌ Socket error: ${error.message}`);
+    });
+    
+    // ============================================
+    // Functions
+    // ============================================
+    
+    function toggleTestMode() {
+      testMode = document.getElementById('testModeCheckbox').checked;
+      log(testMode ? '🧪 Test mode enabled (random IPs)' : '🔒 Test mode disabled (using real IP)');
+    }
+    
+    function joinPoll() {
+      const pollId = document.getElementById('pollId').value.trim();
+      
+      if (!pollId) {
+        alert('Please enter a poll ID');
+        return;
+      }
+      
+      if (currentPollId === pollId) {
+        log('ℹ️ Already in this poll');
+        return;
+      }
+      
+      if (currentPollId) {
+        socket.emit('leave_poll', currentPollId);
+      }
+      
+      currentPollId = pollId;
+      socket.emit('join_poll', pollId);
+      fetchResults(pollId);
+    }
+    
+    function leavePoll() {
+      if (!currentPollId) {
+        alert('Not in any poll');
+        return;
+      }
+      
+      socket.emit('leave_poll', currentPollId);
+      currentPollId = null;
+    }
+    
+    async function vote(optionId) {
+      if (!currentPollId) {
+        alert('Join a poll first');
+        return;
+      }
+      
+      try {
+        const headers = {
+          'Content-Type': 'application/json'
+        };
+        
+        // Only add random IP in test mode
+        if (testMode) {
+          headers['X-Forwarded-For'] = `192.168.1.${Math.floor(Math.random() * 255)}`;
+        }
+        
+        const response = await fetch(`http://localhost:3000/api/polls/${currentPollId}/vote`, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({ optionId })
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+          log(`✅ Voted for option ${optionId}`);
+        } else if (response.status === 429) {
+          // Rate limited
+          log(`🛑 RATE LIMITED: ${data.message}`);
+          log(`   Retry after: ${response.headers.get('Retry-After')} seconds`);
+          log(`   Remaining: ${response.headers.get('X-RateLimit-Remaining')}`);
+          alert(`⛔ RATE LIMITED!\n\n${data.message}\n\nRetry after ${response.headers.get('Retry-After')} seconds`);
+        } else if (response.status === 409) {
+          // Already voted
+          log(`⚠️ Already voted: ${data.message}`);
+          alert(data.message);
+        } else {
+          log(`❌ Vote failed: ${data.message || data.error}`);
+        }
+      } catch (error) {
+        log(`❌ Vote error: ${error.message}`);
+        alert(`Vote error: ${error.message}`);
+      }
+    }
+    
+    async function fetchResults(pollId) {
+      try {
+        const response = await fetch(`http://localhost:3000/api/polls/${pollId}/results`);
+        const data = await response.json();
+        
+        if (response.ok) {
+          displayResults(data.results, data.totalVotes);
+          log(`📊 Loaded initial results (${data.totalVotes} votes)`);
+        }
+      } catch (error) {
+        log(`❌ Fetch error: ${error.message}`);
+      }
+    }
+    
+    function displayResults(results, totalVotes) {
+      const resultsDiv = document.getElementById('results');
+      const totalVotesSpan = document.getElementById('totalVotes');
+      
+      resultsDiv.innerHTML = results.map(result => {
+        const percentage = totalVotes > 0 ? (result.votes / totalVotes * 100).toFixed(1) : 0;
+        return `
+          <div class="result">
+            <strong style="min-width: 150px;">${result.id}: ${result.text}</strong>
+            <span style="margin-left: 10px; min-width: 100px;">${result.votes} votes (${percentage}%)</span>
+            <div class="bar" style="width: ${percentage * 3}px;"></div>
+          </div>
+        `;
+      }).join('');
+      
+      totalVotesSpan.textContent = totalVotes;
+    }
+    
+    function updateStatus(status, socketId) {
+      document.getElementById('statusText').textContent = status;
+      document.getElementById('socketId').textContent = socketId;
+      
+      const statusDiv = document.getElementById('status');
+      if (status === 'Connected') {
+        statusDiv.classList.remove('disconnected');
+        statusDiv.classList.add('connected');
+      } else {
+        statusDiv.classList.remove('connected');
+        statusDiv.classList.add('disconnected');
+      }
+    }
+    
+    function log(message) {
+      const logDiv = document.getElementById('log');
+      const timestamp = new Date().toLocaleTimeString();
+      logDiv.innerHTML += `[${timestamp}] ${message}<br>`;
+      logDiv.scrollTop = logDiv.scrollHeight;
+    }
+    
+    function clearLog() {
+      document.getElementById('log').innerHTML = '';
+    }
+  </script>
+</body>
+</html>
